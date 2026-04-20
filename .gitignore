@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+backend/venv/
+backend/.env
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+
+# Logs
+*.log
+uvicorn.log
+server.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
