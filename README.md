@@ -4,6 +4,12 @@
 
 ---
 
+## Video
+
+Youtube Video: https://youtu.be/eq-2jGJ4ftE
+
+---
+
 ## Live Demo
 
 | Layer | URL |
@@ -289,11 +295,6 @@ This assignment extends the SE4458 Midterm project:
 
 ---
 
-## Video
-
-> _Add link to demo video here (OneDrive / Google Drive / YouTube)_
-
----
 
 ## Author
 
