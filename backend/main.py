@@ -1,5 +1,6 @@
 import os
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
 from dotenv import load_dotenv
@@ -9,9 +10,20 @@ load_dotenv()
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from agent import process_message
 
-app = FastAPI(title="AI Flight Agent API")
+from agent import process_message
+from mcp_client import init_mcp, shutdown_mcp, get_tool_definitions
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Spawn the MCP server subprocess and open a persistent session
+    await init_mcp()
+    yield
+    await shutdown_mcp()
+
+
+app = FastAPI(title="AI Flight Agent API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,7 +50,11 @@ class ChatResponse(BaseModel):
 
 @app.get("/")
 def root():
-    return {"status": "AI Flight Agent is running", "time": datetime.utcnow().isoformat()}
+    return {
+        "status": "AI Flight Agent is running",
+        "time": datetime.utcnow().isoformat(),
+        "mcp_tools": [t["function"]["name"] for t in get_tool_definitions()],
+    }
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -60,7 +76,7 @@ async def chat(request: ChatRequest):
     return ChatResponse(
         response=response_text,
         session_id=session_id,
-        tool_calls=tool_calls
+        tool_calls=tool_calls,
     )
 
 

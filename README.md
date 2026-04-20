@@ -25,41 +25,49 @@ Youtube Video: https://youtu.be/eq-2jGJ4ftE
 ## Architecture
 
 ```
-┌─────────────────┐     HTTP/JSON      ┌──────────────────────────┐
-│                 │ ────────────────►  │   Agent Backend          │
-│  React Frontend │                    │   (Python FastAPI)        │
-│  (Vite + Chat)  │ ◄────────────────  │                          │
-│                 │   response text    │  ┌────────────────────┐  │
-└─────────────────┘                    │  │  Ollama LLM        │  │
-                                       │  │  (qwen2.5:7b /     │  │
-                                       │  │   llama3.1 / etc.) │  │
-                                       │  └────────┬───────────┘  │
-                                       │           │ tool_calls    │
-                                       │  ┌────────▼───────────┐  │
-                                       │  │   MCP Tools        │  │
-                                       │  │ query_flights      │  │
-                                       │  │ buy_ticket         │  │
-                                       │  │ check_in           │  │
-                                       │  └────────┬───────────┘  │
-                                       └───────────┼──────────────┘
-                                                   │ HTTPS
-                                       ┌───────────▼──────────────┐
-                                       │   Ocelot API Gateway     │
-                                       │   (Azure – francecentral) │
-                                       │                          │
-                                       │  Rate limiting (3/min)   │
-                                       │  JWT forwarding          │
-                                       └───────────┬──────────────┘
-                                                   │
-                                       ┌───────────▼──────────────┐
-                                       │   Midterm REST API       │
-                                       │   (.NET 8 / PostgreSQL)  │
-                                       │                          │
-                                       │  /api/v1/Auth/login      │
-                                       │  /api/v1/Flight/query    │
-                                       │  /api/v1/Ticket          │
-                                       │  /api/v1/CheckIn         │
-                                       └──────────────────────────┘
+┌─────────────────┐   HTTP/JSON    ┌──────────────────────────┐
+│                 │ ─────────────► │   Agent Backend          │
+│  React Frontend │                │   (Python FastAPI)        │
+│  (Vite + Chat)  │ ◄───────────── │                          │
+│                 │  response text │  ┌────────────────────┐  │
+└─────────────────┘                │  │  Ollama LLM        │  │
+                                   │  │  (qwen2.5:7b /     │  │
+                                   │  │   llama3.1 / etc.) │  │
+                                   │  └────────┬───────────┘  │
+                                   │           │ tool_calls    │
+                                   │  ┌────────▼───────────┐  │
+                                   │  │   MCP Client       │  │
+                                   │  │  (mcp_client.py)   │  │
+                                   │  └────────┬───────────┘  │
+                                   └───────────┼──────────────┘
+                                               │ MCP over stdio
+                                               │ (spawned subprocess)
+                                   ┌───────────▼──────────────┐
+                                   │   MCP Server             │
+                                   │  (mcp_server.py)         │
+                                   │                          │
+                                   │  • query_flights         │
+                                   │  • buy_ticket            │
+                                   │  • check_in              │
+                                   └───────────┬──────────────┘
+                                               │ HTTPS
+                                   ┌───────────▼──────────────┐
+                                   │   Ocelot API Gateway     │
+                                   │   (Azure – francecentral) │
+                                   │                          │
+                                   │  Rate limiting (3/min)   │
+                                   │  JWT forwarding          │
+                                   └───────────┬──────────────┘
+                                               │
+                                   ┌───────────▼──────────────┐
+                                   │   Midterm REST API       │
+                                   │   (.NET 8 / PostgreSQL)  │
+                                   │                          │
+                                   │  /api/v1/Auth/login      │
+                                   │  /api/v1/Flight/query    │
+                                   │  /api/v1/Ticket          │
+                                   │  /api/v1/CheckIn         │
+                                   └──────────────────────────┘
 ```
 
 ### Component Stack
@@ -67,9 +75,10 @@ Youtube Video: https://youtu.be/eq-2jGJ4ftE
 | Component | Technology | Role |
 |-----------|-----------|------|
 | **Frontend** | React 18 + Vite | Chat UI with markdown rendering |
-| **Agent Backend** | Python FastAPI | Orchestrates LLM ↔ tools ↔ frontend |
+| **Agent Backend** | Python FastAPI | Orchestrates LLM ↔ MCP client ↔ frontend |
 | **LLM** | Ollama (`qwen2.5:7b`) | Intent parsing & tool selection |
-| **MCP Tools** | Python (httpx) | Calls gateway endpoints |
+| **MCP Client** | `mcp` Python SDK | Spawns & talks to the MCP server over stdio |
+| **MCP Server** | `FastMCP` (Python, standalone process) | Exposes flight tools, calls the gateway |
 | **Gateway** | Ocelot (.NET) | Rate limiting, routing, JWT passthrough |
 | **Midterm API** | ASP.NET Core 8 | Business logic + PostgreSQL (Supabase) |
 
@@ -103,9 +112,10 @@ Youtube Video: https://youtu.be/eq-2jGJ4ftE
 ```
 AiAgentFlight/
 ├── backend/
-│   ├── main.py          # FastAPI app — /chat endpoint, session management
+│   ├── main.py          # FastAPI app — /chat endpoint, MCP lifespan, sessions
 │   ├── agent.py         # LLM orchestration loop (Ollama native API via httpx)
-│   ├── tools.py         # MCP tool definitions + gateway HTTP calls
+│   ├── mcp_client.py    # Persistent MCP client (spawns mcp_server.py over stdio)
+│   ├── mcp_server.py    # Standalone MCP server — exposes the 3 airline tools
 │   ├── requirements.txt
 │   └── .env.example
 └── frontend/
@@ -153,9 +163,15 @@ pip install -r requirements.txt
 copy .env.example .env
 # Edit .env — set AIRLINE_USERNAME, AIRLINE_PASSWORD
 
-# Start server
+# Start server (automatically spawns the MCP server subprocess via stdio)
 uvicorn main:app --port 8000
 ```
+
+> The FastAPI app launches `mcp_server.py` as a child process at startup and
+> connects to it over stdio — you do **not** need to start the MCP server in
+> a separate terminal. To exercise the MCP server on its own (for debugging
+> with an MCP inspector or a different host), you can run
+> `python mcp_server.py` directly.
 
 ### Frontend
 
@@ -217,9 +233,27 @@ Clear conversation history for a session.
 
 ---
 
-## MCP Tools
+## MCP Server & Tools
 
-The agent backend exposes three tools that the LLM can invoke:
+The backend follows the architecture prescribed by the assignment: the LLM-facing
+tools live in a **separate MCP server process** (`backend/mcp_server.py`), not
+inline with the FastAPI app. At startup, the agent backend spawns the MCP
+server as a child process over **stdio** using the official `mcp` Python SDK,
+calls `list_tools()` to discover what's available, and converts the returned
+schemas into Ollama's function-calling format. Every tool invocation from the
+LLM is forwarded to the MCP server via `call_tool()`, and only the MCP server
+talks to the Ocelot gateway.
+
+This means:
+- The MCP server is reusable — any MCP-compatible client (Claude Desktop,
+  Cursor, etc.) could connect to `mcp_server.py` directly and get the same
+  three tools.
+- Tool schemas are the single source of truth on the server side; the agent
+  backend does not hardcode them.
+- The server process is spawned once at FastAPI startup (lifespan) and kept
+  alive for the life of the app, so there's no per-request subprocess cost.
+
+The MCP server exposes three tools:
 
 ### `query_flights`
 Calls `GET /gateway/flights/query` with `Client: ai-agent` header (rate limit: 3 req/min).
@@ -254,6 +288,16 @@ Calls `POST /gateway/checkin` (no auth required).
 ---
 
 ## Design & Technical Decisions
+
+### Why a separate MCP server process?
+The assignment explicitly calls for an **MCP server as a distinct component**
+in the architecture (`Agent Backend → MCP Client → MCP Server → Gateway`).
+Rather than baking tool logic into the FastAPI app, `mcp_server.py` is a
+standalone program built with `FastMCP` from the official `mcp` Python SDK.
+The agent backend acts as a real MCP client: it spawns the server as a child
+process over **stdio transport**, issues `list_tools` and `call_tool` requests,
+and never touches the gateway directly. This keeps tool definitions reusable
+by any MCP-compatible host and matches the PDF's architecture diagram.
 
 ### Why Ollama over OpenAI API?
 The assignment allows local LLMs. Ollama runs fully on-device — no API keys, no internet dependency, no cost per token. `qwen2.5:7b` provides reliable tool calling performance for this use case.

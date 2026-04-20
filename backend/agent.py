@@ -2,7 +2,8 @@ import os
 import json
 import httpx
 from datetime import date
-from tools import TOOL_DEFINITIONS, execute_tool
+
+from mcp_client import call_mcp_tool, get_tool_definitions
 
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
@@ -49,6 +50,9 @@ async def process_message(conversation_history: list, user_message: str) -> tupl
         if m["role"] in ("user", "assistant"):
             messages.append({"role": m["role"], "content": m.get("content", "")})
 
+    # Pull tool schemas live from the MCP server (discovered at startup).
+    tool_definitions = get_tool_definitions()
+
     async with httpx.AsyncClient(timeout=120.0) as client:
         while True:
             resp = await client.post(
@@ -56,7 +60,7 @@ async def process_message(conversation_history: list, user_message: str) -> tupl
                 json={
                     "model": OLLAMA_MODEL,
                     "messages": messages,
-                    "tools": TOOL_DEFINITIONS,
+                    "tools": tool_definitions,
                     "stream": False,
                 },
             )
@@ -77,7 +81,9 @@ async def process_message(conversation_history: list, user_message: str) -> tupl
                         tool_args = json.loads(tool_args)
 
                     tool_calls_made.append({"tool": tool_name, "input": tool_args})
-                    result = await execute_tool(tool_name, tool_args)
+
+                    # Route through MCP client -> MCP server -> gateway
+                    result = await call_mcp_tool(tool_name, tool_args)
 
                     messages.append({"role": "tool", "content": result})
             else:
